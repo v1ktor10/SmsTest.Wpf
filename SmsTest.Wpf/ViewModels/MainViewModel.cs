@@ -1,126 +1,59 @@
 ﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SmsTest.Wpf.Models;
-using SmsTest.Wpf.Services;
+using SmsTest.Wpf.Services.AppSettings;
+using SmsTest.Wpf.Services.CommentStorage;
+using SmsTest.Wpf.Services.Environment;
 
 namespace SmsTest.Wpf.ViewModels;
 
-public sealed partial class MainViewModel : ObservableObject
+public sealed partial class MainViewModel(
+    IEnvironmentService envService,
+    ICommentStorageService commentStorage,
+    IAppSettingsService settings,
+    ILogger<MainViewModel> logger)
+    : ObservableObject
 {
-    // ── dependencies ──────────────────────────────────────────────────────
-    private readonly IEnvironmentService      _envService;
-    private readonly ICommentStorageService   _commentStorage;
-    private readonly ILogger<MainViewModel>   _logger;
-    private readonly IReadOnlyList<string>    _variableNames;
+    private readonly TimeSpan _userInputThrottle = TimeSpan.FromMilliseconds(250);
 
-    // ── observable state ──────────────────────────────────────────────────
-    [ObservableProperty]
-    private ObservableCollection<EnvironmentVariableItem> _items = [];
+    [ObservableProperty] private ObservableCollection<EnvironmentVariableItemViewModel> _items = [];
+    [ObservableProperty] private string _statusMessage = string.Empty;
+    [ObservableProperty] private bool _isBusy;
+    private CancellationTokenSource? _saveCts;
 
-    [ObservableProperty]
-    private string _statusMessage = string.Empty;
+    // public init (called from View.Loaded)
+    public async Task InitializeAsync() => await LoadVariablesAsync();
 
-    [ObservableProperty]
-    private bool _isBusy;
-
-    // ── ctor ──────────────────────────────────────────────────────────────
-    public MainViewModel(
-        IEnvironmentService    envService,
-        ICommentStorageService commentStorage,
-        ILogger<MainViewModel> logger,
-        IConfiguration         configuration)
-    {
-        _envService     = envService;
-        _commentStorage = commentStorage;
-        _logger         = logger;
-        _variableNames  = configuration
-            .GetSection("EnvironmentVariables:Names")
-            .Get<string[]>() ?? [];
-
-        LoadVariables();
-    }
-
-    // ── commands ──────────────────────────────────────────────────────────
-
-    [RelayCommand]
-    private void Refresh() => LoadVariables();
-
-    [RelayCommand(CanExecute = nameof(CanSave))]
-    private void Save()
+    private async Task LoadVariablesAsync()
     {
         IsBusy = true;
         try
         {
-            var changed = Items.Where(i => i.HasValueChanges).ToList();
+            var comments = await commentStorage.LoadCommentsAsync();
 
-            foreach (var item in changed)
+            var names = settings.Current.EnvironmentVariableNames;
+            var snapshot = new ObservableCollection<EnvironmentVariableItemViewModel>();
+
+            foreach (var name in names)
             {
-                var old = item.CommittedValue;
-                _envService.SetVariable(item.Name, item.Value);
-                item.CommittedValue = item.Value;
-
-                _logger.LogInformation(
-                    "ENV CHANGED | Name={Name} | OldValue={OldValue} | NewValue={NewValue}",
-                    item.Name, old, item.Value);
-            }
-
-            // Всегда сохраняем комментарии (могли измениться без изменения значений).
-            var comments = Items.ToDictionary(i => i.Name, i => i.Comment);
-            _commentStorage.SaveComments(comments);
-
-            var msg = changed.Count > 0
-                ? $"Сохранено изменений: {changed.Count}"
-                : "Комментарии обновлены, значения без изменений";
-
-            _logger.LogInformation("Save completed: {Message}", msg);
-            SetStatus(msg, isError: false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Save failed");
-            SetStatus($"Ошибка сохранения: {ex.Message}", isError: true);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
-    private bool CanSave() => !IsBusy;
-
-    // ── private helpers ───────────────────────────────────────────────────
-
-    private void LoadVariables()
-    {
-        IsBusy = true;
-        try
-        {
-            var comments = _commentStorage.LoadComments();
-            var snapshot = new ObservableCollection<EnvironmentVariableItem>();
-
-            foreach (var name in _variableNames)
-            {
-                var value = _envService.GetVariable(name) ?? string.Empty;
-
-                snapshot.Add(new EnvironmentVariableItem
+                var model = new EnvironmentVariableItem
                 {
-                    Name           = name,
-                    Value          = value,
-                    CommittedValue = value,
-                    Comment        = comments.TryGetValue(name, out var c) ? c : string.Empty
-                });
+                    Name = name,
+                    Value = envService.GetVariable(name) ?? string.Empty,
+                    Comment = comments.TryGetValue(name, out var c) ? c : string.Empty
+                };
+                snapshot.Add(new EnvironmentVariableItemViewModel(model));
             }
 
             Items = snapshot;
-            _logger.LogInformation("Variables loaded: count={Count}", Items.Count);
+            logger.LogInformation("Variables loaded: count={Count}", Items.Count);
             SetStatus($"Загружено переменных: {Items.Count}", isError: false);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load variables");
+            logger.LogError(ex, "Failed to load variables");
             SetStatus($"Ошибка загрузки: {ex.Message}", isError: true);
         }
         finally
@@ -129,8 +62,72 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private void SetStatus(string message, bool isError)
+    private void SetStatus(string message, bool isError) =>
+        StatusMessage = isError ? $"{message}" : message;
+
+    private async void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        StatusMessage = isError ? $"⚠ {message}" : message;
+        if (e.PropertyName is not (nameof(EnvironmentVariableItemViewModel.Value)
+            or nameof(EnvironmentVariableItemViewModel.Comment)))
+            return;
+
+        _saveCts?.Cancel();
+        _saveCts = new CancellationTokenSource();
+
+        try
+        {
+            await Task.Delay(_userInputThrottle, _saveCts.Token);
+            await SaveAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (IsBusy) return;
+        IsBusy = true;
+        try
+        {
+            var changed = Items.Where(i => i.HasValueChanges).ToList();
+
+            foreach (var item in changed)
+            {
+                var old = item.CommittedValue;
+                envService.SetVariable(item.Name, item.Value);
+                item.Commit();
+
+                logger.LogInformation(
+                    "ENV CHANGED | Name={Name} | OldValue={OldValue} | NewValue={NewValue}",
+                    item.Name, old, item.Value);
+            }
+
+            var comments = Items.ToDictionary(i => i.Name, i => i.Comment);
+            await commentStorage.SaveCommentsAsync(comments);
+
+            logger.LogInformation("Auto-save completed at: {DateTime:HH:mm:ss}", DateTime.Now);
+            SetStatus($"Сохранено в {DateTime.Now:HH:mm:ss}", isError: false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Auto-save failed");
+            SetStatus($"Ошибка сохранения: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    partial void OnItemsChanging(ObservableCollection<EnvironmentVariableItemViewModel>? oldValue,
+        ObservableCollection<EnvironmentVariableItemViewModel> newValue)
+    {
+        if (oldValue is not null)
+            foreach (var item in oldValue)
+                item.PropertyChanged -= OnItemPropertyChanged;
+
+        foreach (var item in newValue)
+            item.PropertyChanged += OnItemPropertyChanged;
     }
 }

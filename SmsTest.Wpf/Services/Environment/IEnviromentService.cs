@@ -1,7 +1,7 @@
-﻿namespace SmsTest.Wpf.Services;
+﻿namespace SmsTest.Wpf.Services.Environment;
 
 /// <summary>
-/// Абстракция над System.Environment для чтения / записи переменных среды.
+/// Сервис для работы с переменными сред
 /// </summary>
 public interface IEnvironmentService
 {

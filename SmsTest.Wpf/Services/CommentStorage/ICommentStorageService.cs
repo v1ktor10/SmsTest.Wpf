@@ -1,13 +1,13 @@
-﻿namespace SmsTest.Wpf.Services;
+﻿namespace SmsTest.Wpf.Services.CommentStorage;
 
 /// <summary>
-/// Хранит пользовательские комментарии к переменным (env vars не поддерживают метаданные нативно).
+/// Сервис для работы с комментариями
 /// </summary>
 public interface ICommentStorageService
 {
-    /// <summary>Загружает словарь имя→комментарий</summary>
-    IReadOnlyDictionary<string, string> LoadComments();
+    /// <summary>Загружает словарь имя → комментарий.</summary>
+    Task<IReadOnlyDictionary<string, string>> LoadCommentsAsync(CancellationToken ct = default);
 
-    /// <summary>Сохраняет словарь имя→комментарий</summary>
-    void SaveComments(IDictionary<string, string> comments);
+    /// <summary>Сохраняет словарь имя → комментарий.</summary>
+    Task SaveCommentsAsync(IDictionary<string, string> comments, CancellationToken ct = default);
 }

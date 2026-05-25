@@ -1,6 +1,9 @@
 ﻿namespace SmsTest.Wpf.Services.AppSettings;
 
-public interface IAppSettings
+/// <summary>
+/// Предоставляет доступ к актуальным настройкам приложения.
+/// </summary>
+public interface IAppSettingsService
 {
-    
+    Models.AppSettings Current { get; }
 }

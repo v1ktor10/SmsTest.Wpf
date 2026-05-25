@@ -1,23 +1,25 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using SmsTest.Wpf.Services.AppSettings;
 
-namespace SmsTest.Wpf.Services;
+namespace SmsTest.Wpf.Services.Environment;
 
 /// <summary>
 /// Читает и записывает переменные среды Windows через <see cref="Environment"/>.
-/// Таргет конфигурируется через appsettings.json → EnvironmentVariables:Target.
 /// </summary>
 public sealed class EnvironmentService : IEnvironmentService
 {
     private readonly ILogger<EnvironmentService> _logger;
     private readonly EnvironmentVariableTarget _target;
 
-    public EnvironmentService(IConfiguration configuration, ILogger<EnvironmentService> logger)
+    public EnvironmentService(IAppSettingsService settings, ILogger<EnvironmentService> logger)
     {
         _logger = logger;
 
-        var raw = configuration["EnvironmentVariables:Target"] ?? "User";
-        _target = Enum.TryParse<EnvironmentVariableTarget>(raw, ignoreCase: true, out var t)
+        _target = Enum.TryParse<EnvironmentVariableTarget>(
+            settings.Current.EnvironmentVariableTarget,
+            ignoreCase: true,
+            out var t)
             ? t
             : EnvironmentVariableTarget.User;
 
@@ -27,7 +29,7 @@ public sealed class EnvironmentService : IEnvironmentService
     /// <inheritdoc/>
     public string? GetVariable(string name)
     {
-        var value = Environment.GetEnvironmentVariable(name, _target);
+        var value = System.Environment.GetEnvironmentVariable(name, _target);
         _logger.LogDebug("GetVariable: {Name} = {Value}", name, value ?? "<null>");
         return value;
     }
@@ -35,7 +37,7 @@ public sealed class EnvironmentService : IEnvironmentService
     /// <inheritdoc/>
     public void SetVariable(string name, string value)
     {
-        Environment.SetEnvironmentVariable(name, value, _target);
+        System.Environment.SetEnvironmentVariable(name, value, _target);
         _logger.LogDebug("SetVariable: {Name} = {Value}", name, value);
     }
 }
